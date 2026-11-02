@@ -130,6 +130,8 @@ jobs:
 
       - name: Format, lint, test and build in clean Debian 13
         run: |
+          # Keep the runner-owned directory writable for the post-build hash step.
+          mkdir -p "$GITHUB_WORKSPACE/dist"
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work \
