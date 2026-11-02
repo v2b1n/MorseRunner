@@ -1,0 +1,25 @@
+.TH MORSE-RUNNER 1 "November 2026" "Morse Runner" "User Commands"
+.SH NAME
+morse-runner \- CW contest practice simulator
+.SH SYNOPSIS
+.B morse-runner
+.RI [ --audio-check ]
+.SH DESCRIPTION
+.B morse-runner
+is a desktop application for practicing amateur-radio CW contest contacts.
+It simulates callers, radio conditions, Morse transmissions, and QSO logging.
+.SH OPTIONS
+.TP
+.B --audio-check
+Open the default audio output device, verify the stream briefly, and exit.
+.SH FILES
+.TP
+.I ~/.local/share/MorseRunner/
+Application settings and session records on Linux. Existing data in
+.I ~/.local/share/MorseRunnerRust/
+is migrated on first launch.
+.SH SEE ALSO
+.BR xdg-open (1)
+.SH LICENSE
+Distributed under the Mozilla Public License 2.0. See the package documentation
+for the full license text and third-party dependency notices.

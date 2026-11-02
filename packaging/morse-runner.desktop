@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Morse Runner
+Comment=CW contest practice simulator
+Exec=morse-runner
+Terminal=false
+Type=Application
+Categories=Education;HamRadio;
+Keywords=CW;Morse;Radio;Contest;

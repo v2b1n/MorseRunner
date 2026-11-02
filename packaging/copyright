@@ -1,0 +1,34 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Morse Runner
+Source: https://github.com/v2b1n/MorseRunner
+
+Files: src/dsp.rs src/morse.rs src/operator.rs src/simulation.rs
+Copyright: 2004-2006 Alex Shovkoplyas, VE3NEA
+           2026 Vladimir Vecgailis
+License: MPL-2.0
+ The Rust modules adapt selected algorithms and behavior from the published
+ Morse Runner 1.68 Pascal source. Upstream source commit
+ 218a1ab53eafc509abc447131229b93f0839b74e contains MPL-2.0 notices. The module
+ mapping is documented in SOURCE-MAP.md.
+ .
+ The complete license text is available in /usr/share/common-licenses/MPL-2.0.
+
+Files: src/audio.rs src/main.rs
+Copyright: 2026 Vladimir Vecgailis
+License: MPL-2.0
+ The source files carry this copyright notice in their headers.
+ .
+ The complete license text is available in /usr/share/common-licenses/MPL-2.0.
+
+Files: assets/calls.txt
+Copyright: 2026 Vladimir Vecgailis
+License: MPL-2.0
+ The callsign list is identified as generated project data.
+ .
+ The complete license text is available in /usr/share/common-licenses/MPL-2.0.
+
+Files: packaging/* .github/workflows/* tests/* CHANGELOG.md README.md
+       SOURCE-MAP.md THIRD_PARTY.md Cargo.toml Cargo.lock about.hbs about.toml
+Copyright: 2026 Morse Runner contributors
+License: MPL-2.0
+ The complete license text is available in /usr/share/common-licenses/MPL-2.0.
