@@ -1,0 +1,10 @@
+/target/
+/dist/
+/.venv/
+/evidence/original/
+/evidence/distribution/
+/evidence/0.1.1-source/
+/evidence/qa-*/
+/evidence/rea-disassembly.json
+/evidence/*.zip
+/evidence/**/*.png
