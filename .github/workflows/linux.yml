@@ -115,7 +115,8 @@ jobs:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', needs.verify-release-tag.outputs.release_tag) || github.ref }}
+          # Tag pushes already set github.ref to refs/tags/<tag>; dispatch uses the verified input.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', needs.verify-release-tag.outputs.release_tag) || github.ref }}
           fetch-depth: 0
 
       - name: Confirm release build uses the verified tag commit
