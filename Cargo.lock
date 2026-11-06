@@ -1560,14 +1560,16 @@ dependencies = [
 
 [[package]]
 name = "morse-runner"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "cpal",
  "dirs",
  "eframe",
+ "raw-window-handle",
  "serde",
  "serde-saphyr",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
