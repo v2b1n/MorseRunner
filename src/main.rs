@@ -1,5 +1,7 @@
 // Copyright (C) 2026 Vladimir Vecgailis.
 // SPDX-License-Identifier: MPL-2.0
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod audio;
 mod dsp;
 mod operator;
@@ -12,10 +14,80 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     io,
+    ops::RangeInclusive,
     path::Path,
     path::PathBuf,
     time::{Duration, Instant},
 };
+
+const NUMERIC_VALUE_WIDTH: f32 = 72.0;
+const INITIAL_WINDOW_WIDTH: f32 = 1130.0;
+const INITIAL_WINDOW_HEIGHT: f32 = 1000.0;
+const WINDOW_SCREEN_HEIGHT_PADDING: f32 = 40.0;
+
+#[derive(Default)]
+struct NumericInput {
+    text: String,
+    editing: bool,
+}
+
+#[derive(Default)]
+struct NumericInputs {
+    wpm: NumericInput,
+    pitch: NumericInput,
+    bandwidth: NumericInput,
+    rit: NumericInput,
+    volume: NumericInput,
+    noise: NumericInput,
+    monitor: NumericInput,
+    activity: NumericInput,
+    minutes: NumericInput,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum StartupDensity {
+    #[default]
+    Regular,
+    Compact,
+    UltraCompact,
+}
+
+impl StartupDensity {
+    fn is_compact(self) -> bool {
+        self != Self::Regular
+    }
+
+    fn is_ultra_compact(self) -> bool {
+        self == Self::UltraCompact
+    }
+}
+
+impl NumericInputs {
+    fn is_editing(&self) -> bool {
+        self.wpm.editing
+            || self.pitch.editing
+            || self.bandwidth.editing
+            || self.rit.editing
+            || self.volume.editing
+            || self.noise.editing
+            || self.monitor.editing
+            || self.activity.editing
+            || self.minutes.editing
+    }
+
+    fn cancel_editing(&mut self) {
+        self.wpm.editing = false;
+        self.pitch.editing = false;
+        self.bandwidth.editing = false;
+        self.rit.editing = false;
+        self.volume.editing = false;
+        self.noise.editing = false;
+        self.monitor.editing = false;
+        self.activity.editing = false;
+        self.minutes.editing = false;
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 struct Settings {
@@ -62,6 +134,7 @@ impl Default for Settings {
 }
 struct App {
     settings: Settings,
+    numeric_inputs: NumericInputs,
     audio: Option<audio::Audio>,
     audio_error: String,
     running: bool,
@@ -87,18 +160,12 @@ struct App {
     settings_file: PathBuf,
     settings_save_pending: Option<Instant>,
     help: bool,
+    startup_titlebar_configured: bool,
+    startup_density: StartupDensity,
 }
 fn data_dir() -> PathBuf {
     let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
-    let current = base.join("MorseRunner");
-    let legacy = base.join("MorseRunnerRust");
-    if current.exists() {
-        return current;
-    }
-    if legacy.exists() && std::fs::rename(&legacy, &current).is_err() {
-        return legacy;
-    }
-    current
+    base.join("MorseRunner")
 }
 fn settings_file() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(data_dir);
@@ -112,50 +179,20 @@ fn write_settings(path: &Path, settings: &Settings) -> io::Result<()> {
     std::fs::write(&tmp, yaml)?;
     std::fs::rename(&tmp, path)
 }
-fn load_settings(yaml_path: &Path, legacy_json_path: &Path) -> (Settings, Option<String>) {
+fn load_settings(yaml_path: &Path) -> (Settings, Option<String>) {
     match std::fs::read_to_string(yaml_path) {
         Ok(yaml) => match serde_saphyr::from_str(&yaml) {
-            Ok(settings) => return (settings, None),
-            Err(error) => {
-                return (
-                    Settings::default(),
-                    Some(format!("Settings could not be loaded from YAML: {error}")),
-                );
-            }
-        },
-        Err(error) if error.kind() != io::ErrorKind::NotFound => {
-            return (
-                Settings::default(),
-                Some(format!("Settings could not be read: {error}")),
-            );
-        }
-        Err(_) => {}
-    }
-
-    match std::fs::read(legacy_json_path) {
-        Ok(json) => match serde_json::from_slice::<Settings>(&json) {
-            Ok(settings) => match write_settings(yaml_path, &settings) {
-                Ok(()) => (
-                    settings,
-                    Some("Imported settings from the previous JSON configuration.".into()),
-                ),
-                Err(error) => (
-                    settings,
-                    Some(format!(
-                        "Settings loaded from JSON but YAML could not be saved: {error}"
-                    )),
-                ),
-            },
+            Ok(settings) => (settings, None),
             Err(error) => (
                 Settings::default(),
-                Some(format!("Settings could not be imported from JSON: {error}")),
+                Some(format!("Settings could not be loaded from YAML: {error}")),
             ),
         },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => (Settings::default(), None),
-        Err(error) => (
+        Err(error) if error.kind() != io::ErrorKind::NotFound => (
             Settings::default(),
-            Some(format!("Legacy settings could not be read: {error}")),
+            Some(format!("Settings could not be read: {error}")),
         ),
+        Err(_) => (Settings::default(), None),
     }
 }
 fn calls() -> &'static Vec<String> {
@@ -167,34 +204,263 @@ fn calls() -> &'static Vec<String> {
             .collect()
     })
 }
+
+fn numeric_slider<T: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    value: &mut T,
+    input: &mut NumericInput,
+    id_and_label: (&'static str, &'static str),
+    range: RangeInclusive<T>,
+    format_value: impl Fn(T) -> String,
+    parse_value: impl Fn(&str) -> Option<T>,
+) {
+    let (id, label) = id_and_label;
+    if !input.editing {
+        input.text = format_value(*value);
+    }
+
+    let row_height = (ui.text_style_height(&ui.style().drag_value_text_style)
+        + 2.0 * ui.spacing().button_padding.y)
+        .max(ui.spacing().interact_size.y);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), row_height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            let size = egui::vec2(NUMERIC_VALUE_WIDTH, row_height);
+            let slider = ui.add(egui::Slider::new(value, range.clone()).show_value(false));
+            if slider.changed() && !input.editing {
+                input.text = format_value(*value);
+            }
+
+            let field_id = ui.id().with(("numeric-value", id));
+            if input.editing {
+                let field = ui.add_sized(
+                    size,
+                    egui::TextEdit::singleline(&mut input.text)
+                        .id(field_id)
+                        .min_size(size)
+                        .desired_width(NUMERIC_VALUE_WIDTH)
+                        .horizontal_align(egui::Align::Center)
+                        .vertical_align(egui::Align::Center)
+                        .char_limit(6)
+                        .clip_text(true)
+                        .font(ui.style().drag_value_text_style.clone()),
+                );
+                if let Some(edited) = parse_value(&input.text) {
+                    *value = if edited < *range.start() {
+                        *range.start()
+                    } else if edited > *range.end() {
+                        *range.end()
+                    } else {
+                        edited
+                    };
+                }
+                if field.lost_focus() {
+                    input.editing = false;
+                    input.text = format_value(*value);
+                }
+            } else {
+                let value_button = egui::Button::new(
+                    egui::RichText::new(&input.text)
+                        .text_style(ui.style().drag_value_text_style.clone()),
+                )
+                .min_size(size);
+                if ui.add_sized(size, value_button).clicked() {
+                    input.editing = true;
+                    ui.memory_mut(|memory| memory.request_focus(field_id));
+                }
+            }
+            ui.label(label);
+        },
+    );
+}
+
+fn numeric_slider_f32(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    input: &mut NumericInput,
+    id: &'static str,
+    label: &'static str,
+    range: RangeInclusive<f32>,
+    decimals: usize,
+) {
+    numeric_slider(
+        ui,
+        value,
+        input,
+        (id, label),
+        range,
+        |value| format!("{value:.decimals$}"),
+        |text| text.parse::<f32>().ok().filter(|value| value.is_finite()),
+    );
+}
+
+fn numeric_slider_usize(
+    ui: &mut egui::Ui,
+    value: &mut usize,
+    input: &mut NumericInput,
+    id: &'static str,
+    label: &'static str,
+    range: RangeInclusive<usize>,
+) {
+    numeric_slider(
+        ui,
+        value,
+        input,
+        (id, label),
+        range,
+        |value| value.to_string(),
+        |text| text.parse().ok(),
+    );
+}
+
+fn numeric_slider_u32(
+    ui: &mut egui::Ui,
+    value: &mut u32,
+    input: &mut NumericInput,
+    id: &'static str,
+    label: &'static str,
+    range: RangeInclusive<u32>,
+) {
+    numeric_slider(
+        ui,
+        value,
+        input,
+        (id, label),
+        range,
+        |value| value.to_string(),
+        |text| text.parse().ok(),
+    );
+}
+
+fn configure_ui(ctx: &egui::Context) {
+    // Keep the application palette and font metrics consistent across operating systems,
+    // regardless of the host OS theme. Sizes below are logical points; eframe/winit scales
+    // them using the current monitor's DPI and updates that scale when the window moves.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
+    ctx.set_visuals(egui::Visuals::dark());
+    let mut style = (*ctx.style()).clone();
+    for (kind, size) in [
+        (egui::TextStyle::Body, 16.),
+        (egui::TextStyle::Button, 16.),
+        (egui::TextStyle::Small, 14.),
+        (egui::TextStyle::Monospace, 17.),
+        (egui::TextStyle::Heading, 22.),
+    ] {
+        if let Some(font) = style.text_styles.get_mut(&kind) {
+            font.size = size;
+        }
+    }
+    style.spacing.item_spacing = egui::vec2(12., 9.);
+    style.spacing.button_padding = egui::vec2(14., 9.);
+    ctx.set_style(style);
+}
+
+fn configure_compact_ui(ctx: &egui::Context, ultra_compact: bool) {
+    let mut style = (*ctx.style()).clone();
+    for (kind, size) in [
+        (
+            egui::TextStyle::Body,
+            if ultra_compact { 12.0 } else { 14.0 },
+        ),
+        (
+            egui::TextStyle::Button,
+            if ultra_compact { 12.0 } else { 14.0 },
+        ),
+        (
+            egui::TextStyle::Small,
+            if ultra_compact { 10.0 } else { 12.0 },
+        ),
+        (
+            egui::TextStyle::Monospace,
+            if ultra_compact { 13.0 } else { 15.0 },
+        ),
+        (
+            egui::TextStyle::Heading,
+            if ultra_compact { 16.0 } else { 19.0 },
+        ),
+    ] {
+        if let Some(font) = style.text_styles.get_mut(&kind) {
+            font.size = size;
+        }
+    }
+    style.spacing.item_spacing.y = if ultra_compact { 1.0 } else { 3.0 };
+    style.spacing.button_padding.y = if ultra_compact { 2.0 } else { 4.0 };
+    style.spacing.interact_size.y = if ultra_compact { 20.0 } else { 24.0 };
+    ctx.set_style(style);
+}
+
+#[cfg(target_os = "windows")]
+fn configure_native_titlebar(frame: &eframe::Frame) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+        SWP_NOZORDER,
+    };
+
+    let Ok(window_handle) = frame.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(window_handle) = window_handle.as_raw() else {
+        return;
+    };
+
+    // SetWindowTheme in winit opts into Windows' dark non-client rendering. Setting
+    // the documented DWM attribute and refreshing the frame makes it take effect
+    // before the first interaction while leaving active/inactive colors to Windows.
+    let dark_mode: i32 = 1;
+    let hwnd = window_handle.hwnd.get() as _;
+    unsafe {
+        let result = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+            &dark_mode as *const i32 as _,
+            std::mem::size_of_val(&dark_mode) as u32,
+        );
+        // Windows 10 builds before 20H1 exposed the same setting at attribute 19.
+        if result < 0 {
+            DwmSetWindowAttribute(
+                hwnd,
+                19,
+                &dark_mode as *const i32 as _,
+                std::mem::size_of_val(&dark_mode) as u32,
+            );
+        }
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED
+                | SWP_NOMOVE
+                | SWP_NOSIZE
+                | SWP_NOZORDER
+                | SWP_NOOWNERZORDER
+                | SWP_NOACTIVATE,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_native_titlebar(_frame: &eframe::Frame) {}
+
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        let mut style = (*cc.egui_ctx.style()).clone();
-        for (kind, size) in [
-            (egui::TextStyle::Body, 16.),
-            (egui::TextStyle::Button, 16.),
-            (egui::TextStyle::Small, 14.),
-            (egui::TextStyle::Monospace, 17.),
-            (egui::TextStyle::Heading, 22.),
-        ] {
-            if let Some(font) = style.text_styles.get_mut(&kind) {
-                font.size = size;
-            }
-        }
-        style.spacing.item_spacing = egui::vec2(12., 9.);
-        style.spacing.button_padding = egui::vec2(14., 9.);
-        cc.egui_ctx.set_style(style);
+        configure_ui(&cc.egui_ctx);
         let data = data_dir();
         let settings_file = settings_file();
-        let (settings, settings_status) =
-            load_settings(&settings_file, &data.join("settings.json"));
+        let (settings, settings_status) = load_settings(&settings_file);
         let (audio, audio_error) = match audio::Audio::open() {
             Ok(a) => (Some(a), String::new()),
             Err(e) => (None, e),
         };
         Self {
             settings,
+            numeric_inputs: NumericInputs::default(),
             audio,
             audio_error,
             running: false,
@@ -221,6 +487,8 @@ impl App {
             settings_file,
             settings_save_pending: None,
             help: false,
+            startup_titlebar_configured: false,
+            startup_density: StartupDensity::Regular,
         }
     }
     fn save_settings(&mut self) {
@@ -496,8 +764,60 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod ui_style_tests {
+    use super::*;
+
+    #[test]
+    fn uses_dark_palette_and_shared_logical_font_sizes_even_when_windows_prefers_light() {
+        let ctx = egui::Context::default();
+        configure_ui(&ctx);
+
+        ctx.begin_pass(egui::RawInput {
+            system_theme: Some(egui::Theme::Light),
+            ..Default::default()
+        });
+        let _ = ctx.end_pass();
+
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
+        let style = ctx.style();
+        assert!(style.visuals.dark_mode);
+        assert_eq!(style.text_styles[&egui::TextStyle::Body].size, 16.);
+        assert_eq!(style.text_styles[&egui::TextStyle::Button].size, 16.);
+        assert_eq!(style.text_styles[&egui::TextStyle::Small].size, 14.);
+        assert_eq!(style.text_styles[&egui::TextStyle::Monospace].size, 17.);
+        assert_eq!(style.text_styles[&egui::TextStyle::Heading].size, 22.);
+    }
+}
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if !self.startup_titlebar_configured {
+            configure_native_titlebar(frame);
+            self.startup_titlebar_configured = true;
+
+            let height = ctx
+                .input(|input| input.viewport().monitor_size.map(|size| size.y))
+                .map(|monitor_height| {
+                    (monitor_height - WINDOW_SCREEN_HEIGHT_PADDING)
+                        .clamp(320.0, INITIAL_WINDOW_HEIGHT)
+                })
+                .unwrap_or(INITIAL_WINDOW_HEIGHT);
+            self.startup_density = if height <= 680.0 {
+                StartupDensity::UltraCompact
+            } else if height < INITIAL_WINDOW_HEIGHT {
+                StartupDensity::Compact
+            } else {
+                StartupDensity::Regular
+            };
+            if self.startup_density.is_compact() {
+                configure_compact_ui(ctx, self.startup_density.is_ultra_compact());
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                INITIAL_WINDOW_WIDTH,
+                height,
+            )));
+        }
         let settings_before = self.settings.clone();
         self.update_engine();
         ctx.request_repaint_after(Duration::from_millis(40));
@@ -511,50 +831,83 @@ impl eframe::App for App {
             Key::F7,
             Key::F8,
         ];
+        let numeric_input_active = self.numeric_inputs.is_editing();
         // Process ESM after TextEdit consumes this frame's text events, so
         // a fast final character + Enter cannot transmit/log a truncated value.
-        let pending_actions: Vec<_> = keys
-            .iter()
-            .enumerate()
-            .filter_map(|(n, k)| {
-                ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, *k))
-                    .then_some(n + 1)
-            })
-            .collect();
-        let enter_pressed = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
-        let ctrl_enter_pressed =
-            ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Enter));
+        let pending_actions: Vec<_> = if numeric_input_active {
+            Vec::new()
+        } else {
+            keys.iter()
+                .enumerate()
+                .filter_map(|(n, k)| {
+                    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, *k))
+                        .then_some(n + 1)
+                })
+                .collect()
+        };
+        let enter_pressed = !numeric_input_active
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
+        let ctrl_enter_pressed = !numeric_input_active
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Enter));
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
-            if let Some(a) = &self.audio {
-                a.mixer.lock().unwrap().abort_tx();
+            if numeric_input_active {
+                self.numeric_inputs.cancel_editing();
+            } else {
+                if let Some(a) = &self.audio {
+                    a.mixer.lock().unwrap().abort_tx();
+                }
+                self.call_sent = false;
+                self.nr_sent = false;
+                self.status = "Transmission cancelled.".into();
             }
-            self.call_sent = false;
-            self.nr_sent = false;
-            self.status = "Transmission cancelled.".into();
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F11)) {
+        if !numeric_input_active
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F11))
+        {
             self.reset_fields();
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::PageUp)) {
+        if !numeric_input_active
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::PageUp))
+        {
             self.settings.wpm = (self.settings.wpm + 5.).min(80.);
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::PageDown)) {
+        if !numeric_input_active
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::PageDown))
+        {
             self.settings.wpm = (self.settings.wpm - 5.).max(10.);
         }
         egui::TopBottomPanel::top("header")
             .frame(
-                egui::Frame::side_top_panel(&ctx.style())
-                    .inner_margin(egui::Margin::symmetric(20, 12)),
+                egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(
+                    20,
+                    if self.startup_density.is_compact() {
+                        6
+                    } else {
+                        12
+                    },
+                )),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(
                         RichText::new("MORSE RUNNER").color(Color32::from_rgb(89, 223, 178)),
                     );
-                    ui.label(RichText::new("RUST / CW CONTEST LAB").small());
+                    ui.label(
+                        RichText::new(format!("v{}", env!("MORSE_RUNNER_BUILD_VERSION"))).small(),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add_sized([64., 40.], egui::Button::new("Help"))
+                            .add_sized(
+                                [
+                                    64.,
+                                    if self.startup_density.is_compact() {
+                                        32.
+                                    } else {
+                                        40.
+                                    },
+                                ],
+                                egui::Button::new("Help"),
+                            )
                             .clicked()
                         {
                             self.help = true;
@@ -566,7 +919,14 @@ impl eframe::App for App {
                             Color32::from_gray(145)
                         };
                         let badge = ui.add_sized(
-                            [104., 40.],
+                            [
+                                104.,
+                                if self.startup_density.is_compact() {
+                                    32.
+                                } else {
+                                    40.
+                                },
+                            ],
                             egui::Button::new(
                                 RichText::new(if self.running {
                                     "    LIVE"
@@ -600,26 +960,226 @@ impl eframe::App for App {
                     });
                 });
             });
-        egui::SidePanel::left("settings").exact_width(285.)
-.frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin { left: 20, right: 18, top: 12, bottom: 16 }))
-.show(ctx,|ui|{
- ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-   if self.running { if ui.add_sized([ui.available_width(),40.],egui::Button::new("■  STOP SESSION")).clicked(){self.stop();} }
-   else if ui.add_sized([ui.available_width(),40.],egui::Button::new("▶  START SESSION").fill(Color32::from_rgb(24,108,83))).clicked(){self.start_session();}
-   ui.add_space(12.);
-   ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-   egui::ScrollArea::vertical().id_salt("settings-scroll").auto_shrink([false, false]).show(ui, |ui| {
-   ui.add_space(12.);ui.heading("STATION");ui.label("MY CALL");ui.add_enabled(!self.running,egui::TextEdit::singleline(&mut self.settings.call).desired_width(220.));
-   ui.add(egui::Slider::new(&mut self.settings.wpm,10.0..=80.0).text("WPM"));ui.add(egui::Slider::new(&mut self.settings.pitch,300.0..=1000.0).text("Pitch Hz"));ui.add(egui::Slider::new(&mut self.settings.bandwidth,100.0..=1000.0).text("BW Hz"));ui.add(egui::Slider::new(&mut self.settings.rit,-300.0..=300.0).text("RIT Hz"));
-   ui.add(egui::Slider::new(&mut self.settings.volume,0.0..=1.0).text("Volume"));ui.add(egui::Slider::new(&mut self.settings.noise,0.0..=0.12).text("Noise"));ui.add(egui::Slider::new(&mut self.settings.monitor,0.0..=1.0).text("Sidetone"));ui.checkbox(&mut self.settings.qsk,"QSK · receive between CW marks");
-   ui.separator();ui.heading("BAND CONDITIONS");if ui.button("Realistic band").on_hover_text("Enable the original QRM, QRN, QSB, flutter and imperfect operators").clicked(){self.settings.qrm=true;self.settings.qrn=true;self.settings.qsb=true;self.settings.flutter=true;self.settings.lids=true;}ui.horizontal(|ui|{ui.checkbox(&mut self.settings.qrm,"QRM");ui.checkbox(&mut self.settings.qrn,"QRN");});ui.horizontal(|ui|{ui.checkbox(&mut self.settings.qsb,"QSB");ui.checkbox(&mut self.settings.flutter,"Flutter");});ui.checkbox(&mut self.settings.lids,"LIDS · imperfect operators");ui.add(egui::Slider::new(&mut self.settings.activity,1..=8).text("Activity"));
-   ui.separator();ui.heading("SESSION");ui.add_enabled_ui(!self.running,|ui|{egui::ComboBox::from_label("Mode").selected_text(["Pile-up","Single calls"][self.settings.mode.min(1)]).show_ui(ui,|ui|{ui.selectable_value(&mut self.settings.mode,0,"Pile-up");ui.selectable_value(&mut self.settings.mode,1,"Single calls");});ui.add(egui::Slider::new(&mut self.settings.minutes,1..=60).text("Minutes"));});
-   ui.add_space(8.);ui.checkbox(&mut self.hint,"Learning aid · reveal station");ui.label(RichText::new("CW contest practice\nCross-platform Rust application\nMPL-2.0").small().weak());
-  }); }); }); });
+        let sidebar_top_margin = if self.startup_density.is_compact() {
+            6
+        } else {
+            12
+        };
+        let sidebar_bottom_margin = if self.startup_density.is_compact() {
+            6
+        } else {
+            16
+        };
+        egui::SidePanel::left("settings")
+            .exact_width(300.)
+            .resizable(false)
+            .show_separator_line(true)
+            .frame(
+                egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin {
+                    left: 20,
+                    right: 20,
+                    top: sidebar_top_margin,
+                    bottom: sidebar_bottom_margin,
+                }),
+            )
+            .show(ctx, |ui| {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    let session_button_height =
+                        if self.startup_density.is_compact() { 32. } else { 40. };
+                    let session_button = if self.running {
+                        egui::Button::new("■  STOP SESSION")
+                    } else {
+                        egui::Button::new("▶  START SESSION")
+                            .fill(Color32::from_rgb(24, 108, 83))
+                    };
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), session_button_height],
+                            session_button,
+                        )
+                        .clicked()
+                    {
+                        if self.running {
+                            self.stop();
+                        } else {
+                            self.start_session();
+                        }
+                    }
+                    ui.add_space(if self.startup_density.is_compact() {
+                        6.
+                    } else {
+                        12.
+                    });
+
+                    let max_scroll_height = ui.available_height();
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("settings-scroll")
+                            .max_height(max_scroll_height)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                            let top_space = if self.startup_density.is_ultra_compact() {
+                                2.
+                            } else if self.startup_density.is_compact() {
+                                4.
+                            } else {
+                                12.
+                            };
+                            ui.add_space(top_space);
+                            ui.heading("STATION");
+                            ui.label("MY CALL");
+                            ui.add_enabled(
+                                !self.running,
+                                egui::TextEdit::singleline(&mut self.settings.call)
+                                    .desired_width(220.),
+                            );
+                            numeric_slider_f32(
+                                ui,
+                                &mut self.settings.wpm,
+                                &mut self.numeric_inputs.wpm,
+                                "wpm",
+                                "WPM",
+                                10.0..=80.0,
+                                0,
+                            );
+                            numeric_slider_f32(
+                                ui,
+                                &mut self.settings.pitch,
+                                &mut self.numeric_inputs.pitch,
+                                "pitch",
+                                "Pitch Hz",
+                                300.0..=1000.0,
+                                0,
+                            );
+                            numeric_slider_f32(
+                                ui,
+                                &mut self.settings.bandwidth,
+                                &mut self.numeric_inputs.bandwidth,
+                                "bandwidth",
+                                "BW Hz",
+                                100.0..=1000.0,
+                                0,
+                            );
+                            numeric_slider_f32(
+                                ui,
+                                &mut self.settings.rit,
+                                &mut self.numeric_inputs.rit,
+                                "rit",
+                                "RIT Hz",
+                                -300.0..=300.0,
+                                0,
+                            );
+                            numeric_slider_f32(
+                                ui,
+                                &mut self.settings.volume,
+                                &mut self.numeric_inputs.volume,
+                                "volume",
+                                "Volume",
+                                0.0..=1.0,
+                                2,
+                            );
+                            numeric_slider_f32(
+                                ui,
+                                &mut self.settings.noise,
+                                &mut self.numeric_inputs.noise,
+                                "noise",
+                                "Noise",
+                                0.0..=0.12,
+                                2,
+                            );
+                            numeric_slider_f32(
+                                ui,
+                                &mut self.settings.monitor,
+                                &mut self.numeric_inputs.monitor,
+                                "monitor",
+                                "Sidetone",
+                                0.0..=1.0,
+                                2,
+                            );
+                            ui.checkbox(
+                                &mut self.settings.qsk,
+                                "QSK · receive between CW marks",
+                            );
+                            ui.separator();
+                            ui.heading("BAND CONDITIONS");
+                            if ui
+                                .button("Realistic band")
+                                .on_hover_text(
+                                    "Enable the original QRM, QRN, QSB, flutter and imperfect operators",
+                                )
+                                .clicked()
+                            {
+                                self.settings.qrm = true;
+                                self.settings.qrn = true;
+                                self.settings.qsb = true;
+                                self.settings.flutter = true;
+                                self.settings.lids = true;
+                            }
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.settings.qrm, "QRM");
+                                ui.checkbox(&mut self.settings.qrn, "QRN");
+                            });
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.settings.qsb, "QSB");
+                                ui.checkbox(&mut self.settings.flutter, "Flutter");
+                            });
+                            ui.checkbox(&mut self.settings.lids, "LIDS · imperfect operators");
+                            numeric_slider_usize(
+                                ui,
+                                &mut self.settings.activity,
+                                &mut self.numeric_inputs.activity,
+                                "activity",
+                                "Activity",
+                                1..=8,
+                            );
+                            ui.separator();
+                            ui.heading("SESSION");
+                            ui.add_enabled_ui(!self.running, |ui| {
+                                egui::ComboBox::from_label("Mode")
+                                    .selected_text(
+                                        ["Pile-up", "Single calls"][self.settings.mode.min(1)],
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut self.settings.mode, 0, "Pile-up");
+                                        ui.selectable_value(
+                                            &mut self.settings.mode,
+                                            1,
+                                            "Single calls",
+                                        );
+                                    });
+                                numeric_slider_u32(
+                                    ui,
+                                    &mut self.settings.minutes,
+                                    &mut self.numeric_inputs.minutes,
+                                    "minutes",
+                                    "Minutes",
+                                    1..=60,
+                                );
+                            });
+                            let learning_aid_space =
+                                if self.startup_density.is_ultra_compact() {
+                                    2.
+                                } else if self.startup_density.is_compact() {
+                                    4.
+                                } else {
+                                    8.
+                                };
+                            ui.add_space(learning_aid_space);
+                            ui.checkbox(&mut self.hint, "Learning aid · reveal station");
+                        });
+                    });
+                });
+            });
         egui::TopBottomPanel::bottom("status")
             .frame(
-                egui::Frame::side_top_panel(&ctx.style())
-                    .inner_margin(egui::Margin::symmetric(20, 8)),
+                egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(
+                    20,
+                    if self.startup_density.is_compact() {
+                        4
+                    } else {
+                        8
+                    },
+                )),
             )
             .show(ctx, |ui| {
                 ui.label(&self.status);
@@ -855,8 +1415,9 @@ fn main() -> eframe::Result {
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1120., 940.])
-            .with_min_inner_size([1000., 800.]),
+            .with_inner_size([INITIAL_WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT])
+            .with_min_inner_size([1000., 320.])
+            .with_clamp_size_to_monitor_size(true),
         ..Default::default()
     };
     eframe::run_native(
@@ -867,11 +1428,11 @@ fn main() -> eframe::Result {
 }
 
 #[cfg(test)]
-mod settings_migration_tests {
+mod settings_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn paths() -> (PathBuf, PathBuf, PathBuf) {
+    fn paths() -> (PathBuf, PathBuf) {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -880,63 +1441,55 @@ mod settings_migration_tests {
             "morse-runner-settings-{}-{unique}",
             std::process::id()
         ));
-        (dir.join("settings.yaml"), dir.join("settings.json"), dir)
+        (dir.join("settings.yaml"), dir)
     }
 
     #[test]
-    fn imports_legacy_json_once_and_keeps_the_original() {
-        let (yaml_path, json_path, dir) = paths();
+    fn loads_yaml_settings() {
+        let (yaml_path, dir) = paths();
         std::fs::create_dir_all(&dir).unwrap();
+        let expected = Settings {
+            call: "W1AW".into(),
+            wpm: 31.0,
+            qrm: true,
+            ..Settings::default()
+        };
+        write_settings(&yaml_path, &expected).unwrap();
+
+        let (settings, status) = load_settings(&yaml_path);
+
+        assert_eq!(settings, expected);
+        assert!(status.is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_yaml_uses_defaults_and_ignores_json() {
+        let (yaml_path, dir) = paths();
+        std::fs::create_dir_all(&dir).unwrap();
+        let json_path = dir.join("settings.json");
         let legacy = br#"{"call":"W1AW","wpm":31.0,"qrm":true}"#;
         std::fs::write(&json_path, legacy).unwrap();
 
-        let (settings, status) = load_settings(&yaml_path, &json_path);
+        let (settings, status) = load_settings(&yaml_path);
 
-        assert_eq!(settings.call, "W1AW");
-        assert_eq!(settings.wpm, 31.0);
-        assert!(settings.qrm);
-        assert!(status.unwrap().contains("Imported settings"));
-        assert_eq!(std::fs::read(&json_path).unwrap(), legacy);
-        let migrated: Settings =
-            serde_saphyr::from_str(&std::fs::read_to_string(&yaml_path).unwrap()).unwrap();
-        assert_eq!(migrated, settings);
-
-        let (again, status) = load_settings(&yaml_path, &json_path);
-        assert_eq!(again, settings);
-        assert!(status.is_none());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn existing_yaml_takes_precedence_over_legacy_json() {
-        let (yaml_path, json_path, dir) = paths();
-        std::fs::create_dir_all(&dir).unwrap();
-        let yaml_settings = Settings {
-            call: "YAML1".into(),
-            ..Settings::default()
-        };
-        write_settings(&yaml_path, &yaml_settings).unwrap();
-        let legacy = serde_json::to_vec(&Settings {
-            call: "JSON1".into(),
-            ..Settings::default()
-        })
-        .unwrap();
-        std::fs::write(&json_path, legacy).unwrap();
-
-        let (settings, status) = load_settings(&yaml_path, &json_path);
-
-        assert_eq!(settings, yaml_settings);
-        assert!(status.is_none());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn missing_settings_use_defaults() {
-        let (yaml_path, json_path, dir) = paths();
-        let (settings, status) = load_settings(&yaml_path, &json_path);
         assert_eq!(settings, Settings::default());
         assert!(status.is_none());
         assert!(!yaml_path.exists());
-        std::fs::remove_dir_all(dir).unwrap_or(());
+        assert_eq!(std::fs::read(&json_path).unwrap(), legacy);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_yaml_uses_defaults_and_reports_error() {
+        let (yaml_path, dir) = paths();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&yaml_path, "invalid: [").unwrap();
+
+        let (settings, status) = load_settings(&yaml_path);
+
+        assert_eq!(settings, Settings::default());
+        assert!(status.unwrap().contains("could not be loaded from YAML"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

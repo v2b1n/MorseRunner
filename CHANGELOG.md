@@ -1,13 +1,14 @@
 # Changelog
 
-## [1.0.0] - 2026-11-02
+## [1.1.0] - 2026-11-06
 
 ### Added
 
-- Publish the Debian 13 (Trixie) amd64 MorseRunner release from the official repository.
-- Attach a maintainer-signed SHA-256 manifest and GitHub Artifact Attestation for each release artifact.
+- Windows 10/11 x86_64 portable ZIP and per-user setup installer.
+- YAML settings in the user's configuration directory; session logs remain JSON in the user's data directory.
+- A standalone Linux amd64 tarball alongside the Debian 13 package.
 
 ### Changed
 
-- Stage tag-triggered releases as drafts only after validating the owner's signed annotated tag.
-- Require explicit owner review and publication of the completed release.
+- Build and test release artifacts for Debian 13 amd64 and Windows x86_64.
+- Verify release artifact checksums and build provenance before maintainer publication.

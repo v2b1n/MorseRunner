@@ -4,9 +4,20 @@ umask 022
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_dir"
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct HEAD 2>/dev/null || date +%s)}"
+version="${MORSE_RUNNER_BUILD_VERSION:-$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)}"
+build_kind="${MORSE_RUNNER_BUILD_KIND:-release}"
+changelog_file="${MORSE_RUNNER_CHANGELOG_FILE:-CHANGELOG.md}"
+if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "Invalid MorseRunner build version: $version" >&2
+  exit 1
+fi
+if [[ "$build_kind" != ci && "$build_kind" != release ]]; then
+  echo "Invalid MorseRunner build kind: $build_kind" >&2
+  exit 1
+fi
+export MORSE_RUNNER_BUILD_VERSION="$version"
 cargo build --release --locked
 cargo about generate --fail about.hbs > target/THIRD_PARTY-LICENSES.md
-version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
 arch="$(dpkg --print-architecture)"
 package_root="$(mktemp -d "$project_dir/target/deb-root.XXXXXX")"
 chmod 755 "$package_root"
@@ -18,10 +29,11 @@ gzip -n -9 "$package_root/usr/share/man/man1/morse-runner.1"
 install -Dm644 packaging/copyright "$package_root/usr/share/doc/morse-runner/copyright"
 install -Dm644 LICENSE "$package_root/usr/share/doc/morse-runner/MPL-2.0"
 install -Dm644 README.md "$package_root/usr/share/doc/morse-runner/README.md"
+install -Dm644 "$changelog_file" "$package_root/usr/share/doc/morse-runner/CHANGELOG.md"
 install -Dm644 SOURCE-MAP.md "$package_root/usr/share/doc/morse-runner/SOURCE-MAP.md"
 install -Dm644 THIRD_PARTY.md "$package_root/usr/share/doc/morse-runner/THIRD_PARTY.md"
 install -Dm644 target/THIRD_PARTY-LICENSES.md "$package_root/usr/share/doc/morse-runner/THIRD_PARTY-LICENSES.md"
-python3 - "$version" "$package_root/usr/share/doc/morse-runner/changelog" <<'PY'
+python3 - "$version" "$build_kind" "$package_root/usr/share/doc/morse-runner/changelog" <<'PY'
 import re
 import os
 import subprocess
@@ -29,11 +41,17 @@ import sys
 import textwrap
 from pathlib import Path
 
-version, destination = sys.argv[1:]
-text = Path("CHANGELOG.md").read_text()
-match = re.search(rf"^## \[{re.escape(version)}\](?:\s+-.*)?\s*$", text, re.M)
+version, build_kind, destination = sys.argv[1:]
+changelog_file = Path(os.environ.get("MORSE_RUNNER_CHANGELOG_FILE", "CHANGELOG.md"))
+text = changelog_file.read_text(encoding="utf-8")
+if build_kind == "ci":
+    match = re.search(rf"^## \[{re.escape(version)}\](?:\s+-.*)?\s*$", text, re.M)
+    distribution = "trixie"
+else:
+    match = re.search(rf"^## \[{re.escape(version)}\](?:\s+-.*)?\s*$", text, re.M)
+    distribution = "stable"
 if not match:
-    raise SystemExit(f"CHANGELOG.md has no release section for {version}")
+    raise SystemExit(f"{changelog_file} has no section for {version}")
 next_section = re.search(r"^## ", text[match.end():], re.M)
 section = text[match.end():match.end() + next_section.start()] if next_section else text[match.end():]
 entries = []
@@ -71,12 +89,12 @@ for entry in entries:
         break_on_hyphens=False,
     ))
 if not wrapped_entries:
-    raise SystemExit(f"CHANGELOG.md release section {version} has no bullet entries")
+    raise SystemExit(f"{changelog_file} section {version} has no bullet entries")
 date = subprocess.check_output(
     ["date", "-Ru", "-d", f"@{os.environ['SOURCE_DATE_EPOCH']}"], text=True
 ).strip()
 Path(destination).write_text(
-    f"morse-runner ({version}) stable; urgency=medium\n\n"
+    f"morse-runner ({version}) {distribution}; urgency=medium\n\n"
     + "\n".join(wrapped_entries)
     + f"\n\n -- Vladimir Vecgailis <vladimir@vovka.de>  {date}\n"
 )
