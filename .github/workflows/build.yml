@@ -1,0 +1,238 @@
+name: Cross-platform CI and staged main releases
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-build-metadata:
+    name: Compute version and build metadata
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Check out the exact build source and history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Generate version and build metadata
+        id: metadata
+        run: bash packaging/prepare-build-metadata.sh
+
+      - name: Upload immutable run metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: morse-runner-metadata
+          path: dist/metadata/*
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 30
+
+  build-debian:
+    name: Test and build Debian 13 package (amd64)
+    needs: [prepare-build-metadata]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Download this run's build metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: morse-runner-metadata
+          path: dist/metadata
+
+      - name: Format, lint, test and build in clean Debian 13
+        env:
+          MORSE_RUNNER_BUILD_VERSION: ${{ needs.prepare-build-metadata.outputs.version }}
+          MORSE_RUNNER_BUILD_KIND: ci
+        run: |
+          packaging/debian-workflow.sh
+
+      - name: Upload this run's Debian package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: morse-runner-debian
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 30
+
+  build-windows:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Test and package Windows 10/11 (x86_64)
+    needs: [prepare-build-metadata]
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download this run's build metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: morse-runner-metadata
+          path: dist/metadata
+
+      - name: Test, build and package Windows
+        shell: pwsh
+        env:
+          MORSE_RUNNER_BUILD_VERSION: ${{ needs.prepare-build-metadata.outputs.version }}
+          MORSE_RUNNER_BUILD_KIND: ci
+        run: ./packaging/build-windows.ps1
+
+      - name: Upload this run's Windows portable archive and installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: morse-runner-windows
+          path: |
+            dist/*.zip
+            dist/*.exe
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 30
+
+  build-macos:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Test and package macOS (${{ matrix.arch }})
+    needs: [prepare-build-metadata]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+            runner: macos-15
+            deployment_target: "11.0"
+          - arch: x86_64
+            target: x86_64-apple-darwin
+            runner: macos-15-intel
+            deployment_target: "10.15"
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Download this run's build metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: morse-runner-metadata
+          path: dist/metadata
+
+      - name: Test, build and package macOS application
+        env:
+          MORSE_RUNNER_BUILD_VERSION: ${{ needs.prepare-build-metadata.outputs.version }}
+          MORSE_RUNNER_BUILD_KIND: ci
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+          MORSE_RUNNER_MACOS_ARCH: ${{ matrix.arch }}
+          RUST_TARGET: ${{ matrix.target }}
+        run: bash packaging/build-macos.sh
+
+      - name: Upload this run's macOS disk image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: morse-runner-macos-${{ matrix.arch }}
+          path: dist/morse-runner_*_macos_${{ matrix.arch }}.dmg
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 30
+
+  attest-main-artifacts:
+    name: Attest the Linux, Windows and macOS release packages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-debian, build-windows, build-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download this run's Debian packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: morse-runner-debian
+          path: dist/debian
+
+      - name: Download this run's Windows packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: morse-runner-windows
+          path: dist/windows
+
+      - name: Download this run's macOS ARM64 image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: morse-runner-macos-arm64
+          path: dist/macos/arm64
+
+      - name: Download this run's macOS x86_64 image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: morse-runner-macos-x86_64
+          path: dist/macos/x86_64
+
+      - name: Generate GitHub build provenance attestations
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/debian/morse-runner_*.deb,dist/debian/morse-runner_*_linux_amd64.tar.gz,dist/windows/morse-runner_*_windows_x86_64.zip,dist/windows/morse-runner_*_windows_x86_64_setup.exe,dist/macos/arm64/morse-runner_*_macos_arm64.dmg,dist/macos/x86_64/morse-runner_*_macos_x86_64.dmg
+
+  stage-main-release:
+    name: Stage this main build as a draft release
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.prepare-build-metadata.result == 'success' &&
+      needs.build-debian.result == 'success' &&
+      needs.build-windows.result == 'success' &&
+      needs.build-macos.result == 'success' &&
+      (needs.attest-main-artifacts.result == 'success' ||
+       needs.attest-main-artifacts.result == 'skipped')
+    needs: [prepare-build-metadata, build-debian, build-windows, build-macos, attest-main-artifacts]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out exact source and tags
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Download this run's packages and metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist/downloads
+
+      - name: Assemble and stage draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MORSE_RUNNER_BUILD_VERSION: ${{ needs.prepare-build-metadata.outputs.version }}
+        run: bash packaging/stage-main-release.sh
+
+

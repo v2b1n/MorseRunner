@@ -1,12 +1,11 @@
 # MorseRunner
 
-A CW contest practice application built with Rust.
+A CW contest practice application which runs on Linux, macOS and Windows. Built with Rust.
 
 ## Install
 
-Releases are available for Linux amd64 as a Debian package (tested on Debian 13) or a standalone `MorseRunner` binary, and for Windows 10/11 x86_64 (tested on Windows 10).
+Releases are available for Linux amd64 as a Debian package or standalone binary, for macOS as separate DMG images for Intel and Apple Silicon, and for Windows 10/11 x86_64 as an installer or standalone ZIP archive.
 
-**Pre-releases** are automatically published on every successful build. They are available for testing but have not yet been tested by the maintainer. Once a build has been tested and approved, it is promoted to a release without rebuilding.
 
 ### Release verification
 
@@ -16,7 +15,7 @@ To verify a downloaded release:
 
 1. Verify the maintainer's GPG signature on `SHA256SUMS`.
 2. Check the downloaded artifact against its SHA-256 checksum.
-3. Verify its GitHub build provenance using `gh attestation verify`. GitHub cli is available at
+3. Verify its GitHub build provenance using `gh attestation verify`. GitHub cli is available at https://cli.github.com/
 
 **Example (Debian package):**
 
@@ -28,7 +27,7 @@ gh attestation verify morse-runner_1.0.25_amd64.deb -R v2b1n/MorseRunner
 
 The maintainer's [public GPG key](https://keys.openpgp.org/vks/v1/by-fingerprint/C73C58F2A4662E48537C77CD17E233FD523708C0) is available for signature verification.
 
-GPG signatures authenticate the release checksums, while GitHub Artifact Attestations provide verifiable information about where and how the artifacts were built. All release packages are listed in one `SHA256SUMS` manifest. Pre-releases have an unsigned manifest until the maintainer attaches `SHA256SUMS.asc` for promotion. On Linux or macOS, verify the manifest with `sha256sum --check SHA256SUMS`.
+GPG signatures authenticate the release checksums, while GitHub Artifact Attestations provide verifiable information about where and how the artifacts were built. All release packages are listed in one `SHA256SUMS` manifest. A staged draft has an unsigned manifest until the maintainer attaches `SHA256SUMS.asc` and publishes it as stable. On Linux, verify the manifest with `sha256sum --check SHA256SUMS`; on macOS, use `shasum -a 256 -c SHA256SUMS`.
 
 ### Debian 13 (amd64)
 
@@ -37,6 +36,10 @@ Install the `.deb` package with:
 ```sh
 sudo apt install ./morse-runner_*_amd64.deb
 ```
+
+### macOS (Intel and Apple Silicon)
+
+Download the DMG matching the Mac's processor (`x86_64` for Intel or `arm64` for Apple Silicon), open it, and drag `MorseRunner.app` to **Applications**. The Intel build requires macOS 10.15 or later; the Apple Silicon build requires macOS 11 or later. The two architecture-specific DMGs are listed separately in `SHA256SUMS`; verify the downloaded image with `shasum -a 256 -c SHA256SUMS` before opening it. The app is not code-signed or notarized, so macOS may show a first-launch security warning.
 
 ### Windows 10/11 (x86_64)
 
@@ -75,13 +78,21 @@ QSK now suppresses RX during keyed marks and restores it between them with the o
 
 ## State and records
 
-Settings are saved as YAML in the XDG configuration folder:
+Settings are saved as YAML in the platform's configuration folder:
 
-- `${XDG_CONFIG_HOME:-~/.config}/morse-runner/settings.yaml`
+- Linux: `${XDG_CONFIG_HOME:-~/.config}/morse-runner/settings.yaml`
+- macOS: `~/Library/Application Support/morse-runner/settings.yaml`
+- Windows: `%APPDATA%\morse-runner\settings.yaml`
 
 The settings include the station callsign, WPM, pitch, bandwidth, RIT, volume, sidetone, noise, session duration and mode, activity, and band conditions. They are saved automatically after changes and restored at the next launch. If the YAML file does not exist, the application starts with default settings.
 
-Session logs are JSON in the XDG local data folder, normally `${XDG_DATA_HOME:-~/.local/share}/MorseRunner/`. Every session gets its own log, saved after each change; CSV exports next to it. NIL, DUP, RST and NR follow the original verification priority. A temporary NIL while TU is still being sent can be replaced by the verified result when the remote station acknowledges completion. A successful local transmission alone never guarantees a successful contact.
+Session logs are JSON in the platform's local data folder:
+
+- Linux: `${XDG_DATA_HOME:-~/.local/share}/MorseRunner/`
+- macOS: `~/Library/Application Support/MorseRunner/`
+- Windows: `%LOCALAPPDATA%\MorseRunner\`
+
+Every session gets its own log, saved after each change; CSV exports next to it. NIL, DUP, RST and NR follow the original verification priority. A temporary NIL while TU is still being sent can be replaced by the verified result when the remote station acknowledges completion. A successful local transmission alone never guarantees a successful contact.
 
 ## Engine and signal model
 
@@ -95,6 +106,54 @@ Session logs are JSON in the XDG local data folder, normally `${XDG_DATA_HOME:-~
 
 ## Build
 
+The Debian package is built and checked on a clean Debian 13 amd64 environment.
+
+
+### Build in Docker
+To run the full local Debian 13 workflow in Docker:
+
+```sh
+docker build --file packaging/Dockerfile --tag morse-runner-builder:latest .
+./packaging/debian-workflow-local.sh
+```
+
+### Build on Debian
+For a native Debian 13 build, install the system packages:
+
+```sh
+sudo apt-get update
+sudo apt-get install --yes --no-install-recommends \
+  'build-essential' \
+  'ca-certificates' \
+  'curl' \
+  'dpkg-dev' \
+  'git' \
+  'lintian' \
+  'python3' \
+  'libasound2-dev' \
+  'libgl1-mesa-dev' \
+  'libwayland-dev' \
+  'libx11-dev' \
+  'libxcursor-dev' \
+  'libxi-dev' \
+  'libxinerama-dev' \
+  'libxkbcommon-dev' \
+  'libxrandr-dev' \
+  'pkg-config'
+```
+
+Install Rust stable, its formatting and linting components, and `cargo-about`:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
+  -y --profile minimal --default-toolchain stable
+. "$HOME/.cargo/env"
+rustup component add rustfmt clippy
+cargo install --locked --features cli cargo-about
+```
+
+Run the checks and build the package:
+
 ```sh
 cargo run --locked
 cargo test --locked
@@ -105,7 +164,7 @@ cargo build --release --locked
 sudo apt install ./dist/morse-runner_*_amd64.deb
 ```
 
-The Debian package is built and checked on a clean Debian 13 amd64 environment. Build prerequisites are Rust stable, build-essential, pkg-config, libasound2-dev, libx11-dev, libxi-dev, libxrandr-dev, libxcursor-dev, libxinerama-dev, libwayland-dev, libxkbcommon-dev, libgl1-mesa-dev, dpkg-dev, lintian and `cargo-about` (install with `cargo install --locked --features cli cargo-about`). Audio uses the system's default output device. The microphone is not used. Audio failures are displayed in the status area.
+Audio uses the system's default output device. The microphone is not used. Audio failures are displayed in the status area.
 
 ## Verification against the original Pascal
 
@@ -136,7 +195,6 @@ The primitive `.f32` files generated by the first script live in `target/pascal-
 - Receiver accumulation uses f64 for numerical stability; model inputs/outputs retain f32. Floating-point differences are measured in the reference tests.
 - Original internal audio is linearly resampled only at the final device boundary; the OS/driver may process it differently from the old Windows audio stack.
 - Keying rise length is capped at the dot length for extreme WPM values, avoiding the original short-dot/long-ramp buffer underflow. The UI currently caps WPM at 80.
-- Debian 13 (Trixie) amd64 is the only supported and tested Linux distribution for this release. Windows 10/11 x86_64 has a portable ZIP and per-user installer; Windows 10 has been manually tested. macOS is not currently supported.
 
 ## Source and licensing
 

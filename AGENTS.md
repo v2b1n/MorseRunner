@@ -11,6 +11,8 @@ This is the official source repository for MorseRunner. Prioritize reviewable ch
 - Reference relevant issues **in this repository**, and keep PR descriptions concise: Summary, Testing, user-visible changes, limitations and issue linkage.
 - Do not copy internal planning notes, lengthy ticket histories, credentials or unrelated discussions into public PRs.
 - Never merge your own PR or create/publish releases without explicit maintainer authorization.
+- Write any technical instructions using ASD-STE100 semantics
+- All commit messages must follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification (`feat:`, `fix:`, `docs:`, `chore:`, …) with one type per commit; mark breaking changes with `!` or a `BREAKING CHANGE:` footer.
 
 ## Quality and compatibility
 
