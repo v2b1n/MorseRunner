@@ -69,3 +69,4 @@ tar --sort=name --format=gnu --mtime="@$SOURCE_DATE_EPOCH" \
 tar -tzf "$archive" > "$work_dir/archive.list"
 grep -Fxq "$archive_root/morse-runner" "$work_dir/archive.list"
 echo "Created $archive"
+

@@ -42,3 +42,4 @@ Name: "{autodesktop}\MorseRunner"; Filename: "{app}\morse-runner.exe"; Tasks: de
 
 [Run]
 Filename: "{app}\morse-runner.exe"; Description: "Launch MorseRunner"; Flags: postinstall nowait skipifsilent
+

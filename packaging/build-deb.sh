@@ -6,7 +6,7 @@ cd "$project_dir"
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct HEAD 2>/dev/null || date +%s)}"
 version="${MORSE_RUNNER_BUILD_VERSION:-$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)}"
 build_kind="${MORSE_RUNNER_BUILD_KIND:-release}"
-changelog_file="${MORSE_RUNNER_CHANGELOG_FILE:-CHANGELOG.md}"
+changelog_file="${MORSE_RUNNER_CHANGELOG_FILE:-}"
 if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
   echo "Invalid MorseRunner build version: $version" >&2
   exit 1
@@ -16,6 +16,14 @@ if [[ "$build_kind" != ci && "$build_kind" != release ]]; then
   exit 1
 fi
 export MORSE_RUNNER_BUILD_VERSION="$version"
+scratch_dir=$(mktemp -d)
+trap 'rm -rf "$scratch_dir"' EXIT
+if [[ -z "$changelog_file" ]]; then
+  # No stamped changelog from CI (local build): stamp CHANGELOG.md here.
+  changelog_file="$scratch_dir/CHANGELOG.md"
+  packaging/stamp-changelog.sh "$version" \
+    "$(date -u -d "@$SOURCE_DATE_EPOCH" +%F)" CHANGELOG.md "$changelog_file"
+fi
 cargo build --release --locked
 cargo about generate --fail about.hbs > target/THIRD_PARTY-LICENSES.md
 arch="$(dpkg --print-architecture)"
@@ -33,72 +41,52 @@ install -Dm644 "$changelog_file" "$package_root/usr/share/doc/morse-runner/CHANG
 install -Dm644 SOURCE-MAP.md "$package_root/usr/share/doc/morse-runner/SOURCE-MAP.md"
 install -Dm644 THIRD_PARTY.md "$package_root/usr/share/doc/morse-runner/THIRD_PARTY.md"
 install -Dm644 target/THIRD_PARTY-LICENSES.md "$package_root/usr/share/doc/morse-runner/THIRD_PARTY-LICENSES.md"
-python3 - "$version" "$build_kind" "$package_root/usr/share/doc/morse-runner/changelog" <<'PY'
-import re
-import os
-import subprocess
-import sys
-import textwrap
-from pathlib import Path
+entries_file="$scratch_dir/entries"
+awk -v version="$version" -v commit="$(git rev-parse --short HEAD)" '
+  function flush() {
+    if (current != "") print "  * " current
+    current = ""
+  }
+  !inside {
+    if (index($0, "## [" version "]") == 1) inside = 1
+    next
+  }
+  /^## / { exit }
+  /^### / {
+    flush()
+    category = $0
+    sub(/^###[[:space:]]+/, "", category)
+    next
+  }
+  /^[[:space:]]*[-*][[:space:]]+/ {
+    flush()
+    item = $0
+    sub(/^[[:space:]]*[-*][[:space:]]+/, "", item)
+    gsub(/`/, "", item)
+    current = category == "" ? item : category ": " item
+    count++
+    next
+  }
+  current != "" && /[^[:space:]]/ {
+    sub(/^[[:space:]]+/, "")
+    sub(/[[:space:]]+$/, "")
+    current = current " " $0
+  }
+  END {
+    flush()
+    if (!inside || count == 0)
+      print "  * CI build on commit " commit
+  }
+' "$changelog_file" > "$entries_file"
 
-version, build_kind, destination = sys.argv[1:]
-changelog_file = Path(os.environ.get("MORSE_RUNNER_CHANGELOG_FILE", "CHANGELOG.md"))
-text = changelog_file.read_text(encoding="utf-8")
-if build_kind == "ci":
-    match = re.search(rf"^## \[{re.escape(version)}\](?:\s+-.*)?\s*$", text, re.M)
-    distribution = "trixie"
-else:
-    match = re.search(rf"^## \[{re.escape(version)}\](?:\s+-.*)?\s*$", text, re.M)
-    distribution = "stable"
-if not match:
-    raise SystemExit(f"{changelog_file} has no section for {version}")
-next_section = re.search(r"^## ", text[match.end():], re.M)
-section = text[match.end():match.end() + next_section.start()] if next_section else text[match.end():]
-entries = []
-category = ""
-current = None
-
-def save_current():
-    if current is not None:
-        entries.append(current)
-
-for line in section.splitlines():
-    heading = re.match(r"^###\s+(.+?)\s*$", line)
-    if heading:
-        save_current()
-        current = None
-        category = heading.group(1).rstrip(":")
-        continue
-    bullet = re.match(r"^\s*[-*]\s+(.+?)\s*$", line)
-    if bullet:
-        save_current()
-        item = re.sub(r"`([^`]+)`", r"\1", bullet.group(1))
-        current = f"{category}: {item}" if category else item
-    elif current is not None and line.strip():
-        current += " " + line.strip()
-save_current()
-
-wrapped_entries = []
-for entry in entries:
-    wrapped_entries.extend(textwrap.wrap(
-        entry,
-        width=78,
-        initial_indent="  * ",
-        subsequent_indent="    ",
-        break_long_words=False,
-        break_on_hyphens=False,
-    ))
-if not wrapped_entries:
-    raise SystemExit(f"{changelog_file} section {version} has no bullet entries")
-date = subprocess.check_output(
-    ["date", "-Ru", "-d", f"@{os.environ['SOURCE_DATE_EPOCH']}"], text=True
-).strip()
-Path(destination).write_text(
-    f"morse-runner ({version}) {distribution}; urgency=medium\n\n"
-    + "\n".join(wrapped_entries)
-    + f"\n\n -- Vladimir Vecgailis <vladimir@vovka.de>  {date}\n"
-)
-PY
+distribution=stable
+[[ "$build_kind" == ci ]] && distribution=trixie
+date=$(date -Ru -d "@$SOURCE_DATE_EPOCH")
+{
+  printf 'morse-runner (%s) %s; urgency=medium\n\n' "$version" "$distribution"
+  cat "$entries_file"
+  printf '\n -- Vladimir Vecgailis <vladimir@vovka.de>  %s\n' "$date"
+} > "$package_root/usr/share/doc/morse-runner/changelog"
 gzip -n -9 "$package_root/usr/share/doc/morse-runner/changelog"
 install -d "$package_root/DEBIAN" dist
 cat > "$package_root/DEBIAN/control" <<CONTROL
@@ -117,3 +105,4 @@ Description: Native Rust CW contest training simulator
  keyboard operation, verified logs and CSV export.
 CONTROL
 dpkg-deb --root-owner-group --build "$package_root" "dist/morse-runner_${version}_${arch}.deb"
+

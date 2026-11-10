@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Separate macOS DMG builds for Intel and Apple Silicon.
+- Local build-workflow for debian
+- Release attestations
+- UI Grooming
+
+### Changed
+
+- Stage successful main builds as unpublished draft prereleases until checksum signature and release verification are complete.
+- Include both macOS DMGs in the shared checksum manifest and artifact-attestation release checks.
+
 ## [1.1.0] - 2026-11-06
 
 ### Added
