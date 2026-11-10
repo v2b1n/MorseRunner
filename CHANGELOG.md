@@ -6,8 +6,8 @@
 
 - Separate macOS DMG builds for Intel and Apple Silicon.
 - Local build-workflow for debian
-- Release attestations
 - UI Grooming
+- Release attestations
 
 ### Changed
 
