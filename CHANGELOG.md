@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-11-10
+
 ### Added
 
 - Separate macOS DMG builds for Intel and Apple Silicon.
