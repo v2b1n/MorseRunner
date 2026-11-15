@@ -1,6 +1,8 @@
 # MorseRunner
 
-A CW contest practice application which runs on Linux, macOS and Windows. Built with Rust.
+A CW contest practice application which runs natively on Linux, macOS and Windows. Built with Rust.
+
+![Morse Runner screenshot](docs/images/morse-runner.png)
 
 ## Install
 

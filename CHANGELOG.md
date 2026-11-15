@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- added screenshot
 
 ## [1.1.6] - 2026-11-10
 
