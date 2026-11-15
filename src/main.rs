@@ -25,6 +25,19 @@ const INITIAL_WINDOW_WIDTH: f32 = 1130.0;
 const INITIAL_WINDOW_HEIGHT: f32 = 1000.0;
 const WINDOW_SCREEN_HEIGHT_PADDING: f32 = 40.0;
 
+// Limits of the adjustable settings. The sliders and the settings loader share
+// them, so a stored value can never be outside what the engine supports.
+const WPM_RANGE: RangeInclusive<f32> = 10.0..=80.0;
+const PITCH_RANGE: RangeInclusive<f32> = 300.0..=1000.0;
+const BANDWIDTH_RANGE: RangeInclusive<f32> = 100.0..=1000.0;
+const RIT_RANGE: RangeInclusive<f32> = -300.0..=300.0;
+const VOLUME_RANGE: RangeInclusive<f32> = 0.0..=1.0;
+const NOISE_RANGE: RangeInclusive<f32> = 0.0..=0.12;
+const MONITOR_RANGE: RangeInclusive<f32> = 0.0..=1.0;
+const ACTIVITY_RANGE: RangeInclusive<usize> = 1..=8;
+const MINUTES_RANGE: RangeInclusive<u32> = 1..=60;
+const LAST_MODE: usize = 1;
+
 #[derive(Default)]
 struct NumericInput {
     text: String,
@@ -132,6 +145,36 @@ impl Default for Settings {
         }
     }
 }
+impl Settings {
+    /// Limit every value to its slider range. A settings file that was edited
+    /// manually or damaged can hold values that the engine cannot use, for
+    /// example a pitch of 0 Hz, which makes the tone table size invalid.
+    fn sanitized(mut self) -> Self {
+        fn limit(value: f32, range: RangeInclusive<f32>, default: f32) -> f32 {
+            if value.is_finite() {
+                value.clamp(*range.start(), *range.end())
+            } else {
+                default
+            }
+        }
+        let default = Self::default();
+        self.wpm = limit(self.wpm, WPM_RANGE, default.wpm);
+        self.pitch = limit(self.pitch, PITCH_RANGE, default.pitch);
+        self.bandwidth = limit(self.bandwidth, BANDWIDTH_RANGE, default.bandwidth);
+        self.rit = limit(self.rit, RIT_RANGE, default.rit);
+        self.volume = limit(self.volume, VOLUME_RANGE, default.volume);
+        self.noise = limit(self.noise, NOISE_RANGE, default.noise);
+        self.monitor = limit(self.monitor, MONITOR_RANGE, default.monitor);
+        self.activity = self
+            .activity
+            .clamp(*ACTIVITY_RANGE.start(), *ACTIVITY_RANGE.end());
+        self.minutes = self
+            .minutes
+            .clamp(*MINUTES_RANGE.start(), *MINUTES_RANGE.end());
+        self.mode = self.mode.min(LAST_MODE);
+        self
+    }
+}
 struct App {
     settings: Settings,
     numeric_inputs: NumericInputs,
@@ -181,8 +224,8 @@ fn write_settings(path: &Path, settings: &Settings) -> io::Result<()> {
 }
 fn load_settings(yaml_path: &Path) -> (Settings, Option<String>) {
     match std::fs::read_to_string(yaml_path) {
-        Ok(yaml) => match serde_saphyr::from_str(&yaml) {
-            Ok(settings) => (settings, None),
+        Ok(yaml) => match serde_saphyr::from_str::<Settings>(&yaml) {
+            Ok(settings) => (settings.sanitized(), None),
             Err(error) => (
                 Settings::default(),
                 Some(format!("Settings could not be loaded from YAML: {error}")),
@@ -869,12 +912,12 @@ impl eframe::App for App {
         if !numeric_input_active
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::PageUp))
         {
-            self.settings.wpm = (self.settings.wpm + 5.).min(80.);
+            self.settings.wpm = (self.settings.wpm + 5.).min(*WPM_RANGE.end());
         }
         if !numeric_input_active
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::PageDown))
         {
-            self.settings.wpm = (self.settings.wpm - 5.).max(10.);
+            self.settings.wpm = (self.settings.wpm - 5.).max(*WPM_RANGE.start());
         }
         egui::TopBottomPanel::top("header")
             .frame(
@@ -1039,7 +1082,7 @@ impl eframe::App for App {
                                 &mut self.numeric_inputs.wpm,
                                 "wpm",
                                 "WPM",
-                                10.0..=80.0,
+                                WPM_RANGE,
                                 0,
                             );
                             numeric_slider_f32(
@@ -1048,7 +1091,7 @@ impl eframe::App for App {
                                 &mut self.numeric_inputs.pitch,
                                 "pitch",
                                 "Pitch Hz",
-                                300.0..=1000.0,
+                                PITCH_RANGE,
                                 0,
                             );
                             numeric_slider_f32(
@@ -1057,7 +1100,7 @@ impl eframe::App for App {
                                 &mut self.numeric_inputs.bandwidth,
                                 "bandwidth",
                                 "BW Hz",
-                                100.0..=1000.0,
+                                BANDWIDTH_RANGE,
                                 0,
                             );
                             numeric_slider_f32(
@@ -1066,7 +1109,7 @@ impl eframe::App for App {
                                 &mut self.numeric_inputs.rit,
                                 "rit",
                                 "RIT Hz",
-                                -300.0..=300.0,
+                                RIT_RANGE,
                                 0,
                             );
                             numeric_slider_f32(
@@ -1075,7 +1118,7 @@ impl eframe::App for App {
                                 &mut self.numeric_inputs.volume,
                                 "volume",
                                 "Volume",
-                                0.0..=1.0,
+                                VOLUME_RANGE,
                                 2,
                             );
                             numeric_slider_f32(
@@ -1084,7 +1127,7 @@ impl eframe::App for App {
                                 &mut self.numeric_inputs.noise,
                                 "noise",
                                 "Noise",
-                                0.0..=0.12,
+                                NOISE_RANGE,
                                 2,
                             );
                             numeric_slider_f32(
@@ -1093,7 +1136,7 @@ impl eframe::App for App {
                                 &mut self.numeric_inputs.monitor,
                                 "monitor",
                                 "Sidetone",
-                                0.0..=1.0,
+                                MONITOR_RANGE,
                                 2,
                             );
                             ui.checkbox(
@@ -1130,14 +1173,14 @@ impl eframe::App for App {
                                 &mut self.numeric_inputs.activity,
                                 "activity",
                                 "Activity",
-                                1..=8,
+                                ACTIVITY_RANGE,
                             );
                             ui.separator();
                             ui.heading("SESSION");
                             ui.add_enabled_ui(!self.running, |ui| {
                                 egui::ComboBox::from_label("Mode")
                                     .selected_text(
-                                        ["Pile-up", "Single calls"][self.settings.mode.min(1)],
+                                        ["Pile-up", "Single calls"][self.settings.mode.min(LAST_MODE)],
                                     )
                                     .show_ui(ui, |ui| {
                                         ui.selectable_value(&mut self.settings.mode, 0, "Pile-up");
@@ -1153,7 +1196,7 @@ impl eframe::App for App {
                                     &mut self.numeric_inputs.minutes,
                                     "minutes",
                                     "Minutes",
-                                    1..=60,
+                                    MINUTES_RANGE,
                                 );
                             });
                             let learning_aid_space =
@@ -1477,6 +1520,52 @@ mod settings_tests {
         assert!(status.is_none());
         assert!(!yaml_path.exists());
         assert_eq!(std::fs::read(&json_path).unwrap(), legacy);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn out_of_range_yaml_values_are_limited_to_supported_ranges() {
+        let (yaml_path, dir) = paths();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &yaml_path,
+            "call: W1AW\nwpm: 500\npitch: 0\nbandwidth: -1\nrit: .nan\nvolume: 7\n\
+             noise: .inf\nmonitor: -3\nactivity: 0\nminutes: 0\nmode: 9\n",
+        )
+        .unwrap();
+
+        let (settings, status) = load_settings(&yaml_path);
+
+        assert!(status.is_none());
+        assert_eq!(
+            settings,
+            Settings {
+                call: "W1AW".into(),
+                wpm: 80.,
+                pitch: 300.,
+                bandwidth: 100.,
+                rit: 0.,
+                volume: 1.,
+                noise: 0.02,
+                monitor: 0.,
+                activity: 1,
+                minutes: 1,
+                mode: 1,
+                ..Settings::default()
+            }
+        );
+        // The engine must accept every loaded value without a panic.
+        let mut engine = simulation::Engine::new(1);
+        engine.start(simulation::Config {
+            wpm: settings.wpm,
+            pitch: settings.pitch,
+            bandwidth: settings.bandwidth,
+            rit: settings.rit,
+            ..Default::default()
+        });
+        for _ in 0..20 {
+            assert!(engine.render().iter().all(|v| v.is_finite()));
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
