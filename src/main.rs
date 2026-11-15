@@ -767,7 +767,7 @@ impl App {
                 q.time, q.call, q.rst, q.nr, q.sent, q.true_call, q.true_rst, q.true_nr, q.error
             ));
         }
-        match std::fs::write(&p, s) {
+        match std::fs::create_dir_all(&self.data).and_then(|_| std::fs::write(&p, s)) {
             Ok(_) => self.status = format!("Exported {}", p.display()),
             Err(e) => self.status = format!("Export failed: {e}"),
         }
