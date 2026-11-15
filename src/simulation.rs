@@ -435,9 +435,6 @@ impl Engine {
         }
     }
     fn me_finished(&mut self) {
-        if !self.logs.is_empty() {
-            self.trace_exchange("TX finished before receive");
-        }
         if !self.config.single
             && (has(self.me.messages, Message::Cq)
                 || (!self.logs.is_empty()
@@ -449,49 +446,10 @@ impl Engine {
             }
         }
         self.notify(Event::MeFinished);
-        if !self.logs.is_empty() {
-            self.trace_exchange("TX finished after receive");
-        }
-    }
-    fn trace_exchange(&self, event: &str) {
-        if cfg!(test) {
-            return;
-        }
-        use std::io::Write;
-        let path = crate::data_dir();
-        let _ = std::fs::create_dir_all(&path);
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path.join("qso-diagnostic.log"))
-        {
-            let states: Vec<_> = self
-                .stations
-                .iter()
-                .filter_map(|s| match &s.kind {
-                    Kind::Dx { oper, .. } => {
-                        Some(format!("{}:{:?}/{:?}", s.call, oper.state, s.state))
-                    }
-                    _ => None,
-                })
-                .collect();
-            let _ = writeln!(
-                file,
-                "{:.2} {} flags={} his={} queued={} last={:?} stations={:?}",
-                self.elapsed(),
-                event,
-                self.me.messages,
-                self.me.his_call,
-                self.pending_completion.is_some(),
-                self.logs.last().map(|q| (&q.call, &q.error)),
-                states
-            );
-        }
     }
     /// ESM completion must not send a short TU over the tail of the report.
     /// Manual transmissions still use `send` and retain normal collision behavior.
     pub fn complete_exchange(&mut self, messages: &[Message], call: &str) {
-        self.trace_exchange(&format!("ESM complete {} {:?}", call, messages));
         if !self.active {
             return;
         }

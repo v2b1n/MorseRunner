@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 - added screenshot
+- Fixed a crash at session start when the settings file holds values outside the supported ranges.
+- Removed the undocumented `qso-diagnostic.log` file that the audio engine wrote during a session.
+- Fixed the CSV export before the first saved log on a new installation.
 
 ## [1.1.6] - 2026-11-10
 

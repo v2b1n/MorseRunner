@@ -116,17 +116,33 @@ hdiutil verify "$dmg"
 hdiutil attach "$dmg" -readonly -nobrowse -noverify -mountpoint "$mount_point" >/dev/null
 mounted=1
 
+# Each check must stop the build explicitly. Bash 3.2, the macOS system shell,
+# does not apply "set -e" to a failed [[ ... ]] command.
+verify() {
+  local description=$1
+  shift
+  if ! "$@"; then
+    echo "Disk image verification failed: $description" >&2
+    exit 1
+  fi
+}
+
 mounted_app="$mount_point/MorseRunner.app"
-[[ -x "$mounted_app/Contents/MacOS/morse-runner" ]]
-[[ -L "$mount_point/Applications" ]]
-[[ "$(readlink "$mount_point/Applications")" == /Applications ]]
-[[ "$(lipo -archs "$mounted_app/Contents/MacOS/morse-runner")" == "$arch" ]]
-for document in LICENSE README.md THIRD_PARTY.md CHANGELOG.md BUILD-INFO.json THIRD-PARTY-LICENSES.md; do
-  [[ -s "$mounted_app/Contents/Resources/$document" ]]
+mounted_binary="$mounted_app/Contents/MacOS/morse-runner"
+mounted_plist="$mounted_app/Contents/Info.plist"
+verify "the application executable is present" test -x "$mounted_binary"
+verify "the Applications entry is a symbolic link" test -L "$mount_point/Applications"
+verify "the Applications link points to /Applications" \
+  test "$(readlink "$mount_point/Applications")" = /Applications
+verify "the executable architecture is $arch" \
+  test "$(lipo -archs "$mounted_binary")" = "$arch"
+for document in LICENSE README.md THIRD_PARTY.md CHANGELOG.md BUILD-INFO.json THIRD_PARTY-LICENSES.md; do
+  verify "$document is present in the application resources" \
+    test -s "$mounted_app/Contents/Resources/$document"
 done
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$mounted_app/Contents/Info.plist")" == "$version" ]]
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$mounted_app/Contents/Info.plist")" == "$deployment_target" ]]
+verify "the bundle version is $version" \
+  test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$mounted_plist")" = "$version"
+verify "the minimum system version is $deployment_target" \
+  test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$mounted_plist")" = "$deployment_target"
 
 echo "Created and verified $dmg ($arch, macOS $deployment_target minimum)"
-
-
