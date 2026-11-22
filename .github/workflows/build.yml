@@ -5,16 +5,19 @@ on:
     branches: ['**']
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   prepare-build-metadata:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     name: Compute version and build metadata
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       version: ${{ steps.metadata.outputs.version }}
     steps:
@@ -23,12 +26,22 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check if the main push needs a build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: main-push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash packaging/check-main-push.sh
 
       - name: Generate version and build metadata
+        if: steps.main-push.outputs.skip != 'true'
         id: metadata
         run: bash packaging/prepare-build-metadata.sh
 
       - name: Upload immutable run metadata
+        if: steps.main-push.outputs.skip != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: morse-runner-metadata
@@ -38,6 +51,7 @@ jobs:
           retention-days: 30
 
   build-debian:
+    if: needs.prepare-build-metadata.outputs.version != ''
     name: Test and build Debian 13 package (amd64)
     needs: [prepare-build-metadata]
     runs-on: ubuntu-24.04
@@ -75,7 +89,7 @@ jobs:
           retention-days: 30
 
   build-windows:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.prepare-build-metadata.outputs.version != ''
     name: Test and package Windows 10/11 (x86_64)
     needs: [prepare-build-metadata]
     runs-on: windows-2022
@@ -112,7 +126,7 @@ jobs:
           retention-days: 30
 
   build-macos:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.prepare-build-metadata.outputs.version != ''
     name: Test and package macOS (${{ matrix.arch }})
     needs: [prepare-build-metadata]
     strategy:
@@ -163,7 +177,7 @@ jobs:
 
   attest-main-artifacts:
     name: Attest the Linux, Windows and macOS release packages
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     needs: [build-debian, build-windows, build-macos]
     runs-on: ubuntu-24.04
     permissions:
@@ -205,7 +219,6 @@ jobs:
     name: Stage this main build as a draft release
     if: >-
       always() &&
-      github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
       needs.prepare-build-metadata.result == 'success' &&
       needs.build-debian.result == 'success' &&

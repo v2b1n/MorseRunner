@@ -31,6 +31,9 @@ git -c tag.gpgSign=false tag "$tag" "$GITHUB_SHA"
 git push origin "refs/tags/$tag"
 
 previous_main_sha=$(jq -r '.before // empty' "$GITHUB_EVENT_PATH")
+if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+  previous_main_sha=$(git rev-parse --verify --quiet "${GITHUB_SHA}^" || true)
+fi
 previous_changelog=$(mktemp)
 release_notes_file=dist/release-notes.md
 

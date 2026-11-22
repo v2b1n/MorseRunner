@@ -25,7 +25,8 @@ else
 fi
 
 attestations=false
-if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+if [[ "$GITHUB_REF" == refs/heads/main &&
+      ( "$GITHUB_EVENT_NAME" == push || "$GITHUB_EVENT_NAME" == workflow_dispatch ) ]]; then
   attestations=true
 fi
 
