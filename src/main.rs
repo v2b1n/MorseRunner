@@ -909,6 +909,12 @@ impl eframe::App for App {
         {
             self.reset_fields();
         }
+        if !numeric_input_active && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::W))
+        {
+            self.reset_fields();
+            self.rst.clear();
+            self.focus_nr = false;
+        }
         if !numeric_input_active
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::PageUp))
         {
